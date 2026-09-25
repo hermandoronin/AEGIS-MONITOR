@@ -1,3 +1,6 @@
+# Local stack: dashboard on http://localhost:8080, API/WebSocket proxied by nginx.
+#
+#   docker compose up --build
 services:
   frontend:
     build:
@@ -7,45 +10,14 @@ services:
       - "8080:80"
     depends_on:
       - backend
-    networks:
-      - aegis-net
 
-  # Mock data server: generated telemetry only, no persistence.
   backend:
     build:
       context: .
       dockerfile: Dockerfile.server
-    ports:
-      - "3001:3001"
     environment:
       PORT: "3001"
-    networks:
-      - aegis-net
-
-  # Provisioned for the planned persistence layer. Nothing connects to it yet --
-  # server/index.ts holds no database client. Credentials come from .env
-  # (see .env.example).
-  timescaledb:
-    image: timescale/timescaledb:latest-pg16
+      SIM_SEED: ${SIM_SEED:-}
+      BACKFILL_S: ${BACKFILL_S:-900}
     ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-aegis}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-aegis_monitor}
-    volumes:
-      - tsdb-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aegis} -d ${POSTGRES_DB:-aegis_monitor}"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      - aegis-net
-
-volumes:
-  tsdb-data:
-
-networks:
-  aegis-net:
-    driver: bridge
+      - "3001:3001" # direct API access for development; nginx proxies it anyway

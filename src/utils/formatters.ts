@@ -1,65 +1,75 @@
 /**
- * Formatting utilities for maritime sensor values and timestamps.
+ * Formatting for engineering values, positions and times.
+ * Times are shown in UTC, as ship's logs and alarm printouts are.
  */
+import type { ChannelDef } from '../../shared/types';
 
-export function formatRPM(value: number): string {
-  return `${Math.round(value)} RPM`;
-}
-
-export function formatTemperature(celsius: number, decimals = 1): string {
-  return `${celsius.toFixed(decimals)} \u00b0C`;
-}
-
-export function formatPressure(kpa: number, unit: 'bar' | 'kPa' = 'bar'): string {
-  if (unit === 'bar') {
-    const bar = kpa / 100;
-    return `${bar.toFixed(2)} bar`;
-  }
-  return `${Math.round(kpa)} kPa`;
-}
-
-export function formatTimestamp(isoOrMs: string | number): string {
-  const date = typeof isoOrMs === 'string' ? new Date(isoOrMs) : new Date(isoOrMs);
-  if (isNaN(date.getTime())) {
-    return '--:--:--';
-  }
-  return date.toLocaleString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+export function formatValue(channel: ChannelDef, value: number | undefined | null): string {
+  if (value === undefined || value === null || !Number.isFinite(value)) return '---';
+  return value.toLocaleString('en-GB', {
+    minimumFractionDigits: channel.decimals,
+    maximumFractionDigits: channel.decimals,
   });
 }
 
-export function formatDuration(seconds: number): string {
-  if (seconds < 0) return '0s';
+export function formatNumber(value: number, decimals = 0): string {
+  if (!Number.isFinite(value)) return '---';
+  return value.toLocaleString('en-GB', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
 
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
+/** HH:MM:SS UTC */
+export function formatTime(ms: number): string {
+  if (!Number.isFinite(ms)) return '--:--:--';
+  return new Date(ms).toISOString().slice(11, 19);
+}
 
+/** 25 Sep 14:03 UTC */
+export function formatDateTime(ms: number): string {
+  if (!Number.isFinite(ms)) return '---';
+  const date = new Date(ms);
+  const day = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+  return `${day} ${date.toISOString().slice(11, 16)} UTC`;
+}
+
+/** 1d 4h 12m */
+export function formatDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.round(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
   const parts: string[] = [];
   if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  if (minutes > 0) parts.push(`${minutes}m`);
-  if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
-
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
   return parts.join(' ');
 }
 
 export function formatRunningHours(hours: number): string {
-  const wholeHours = Math.floor(hours);
-  const minutes = Math.round((hours - wholeHours) * 60);
-  return `${wholeHours.toLocaleString('en-GB')}h ${String(minutes).padStart(2, '0')}m`;
+  const whole = Math.floor(hours);
+  const minutes = Math.floor((hours - whole) * 60);
+  return `${whole.toLocaleString('en-GB')} h ${String(minutes).padStart(2, '0')} m`;
 }
 
-export function formatFuelRate(litersPerHour: number): string {
-  return `${litersPerHour.toFixed(1)} L/h`;
+/** 54°32.7'N */
+export function formatLatitude(lat: number): string {
+  return formatDm(Math.abs(lat), 2) + (lat >= 0 ? 'N' : 'S');
 }
 
-export function formatPercentage(value: number, decimals = 1): string {
-  return `${value.toFixed(decimals)}%`;
+/** 006°32.4'E */
+export function formatLongitude(lon: number): string {
+  return formatDm(Math.abs(lon), 3) + (lon >= 0 ? 'E' : 'W');
+}
+
+function formatDm(value: number, degreeDigits: number): string {
+  let degrees = Math.floor(value);
+  let minutes = Math.round((value - degrees) * 600) / 10;
+  if (minutes >= 60) {
+    degrees += 1;
+    minutes = 0;
+  }
+  return `${String(degrees).padStart(degreeDigits, '0')}°${minutes.toFixed(1).padStart(4, '0')}'`;
+}
+
+export function formatBearing(deg: number): string {
+  return `${String(Math.round(deg) % 360).padStart(3, '0')}°`;
 }
