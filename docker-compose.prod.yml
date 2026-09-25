@@ -1,5 +1,5 @@
-# Production overlay: same two application services, restarted automatically and
-# without the database container (the server does not use one yet).
+# Shipboard / demo deployment: only the dashboard port is exposed, both
+# services restart on their own after a power cut.
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 services:
@@ -12,8 +12,6 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
-    networks:
-      - aegis-net
 
   backend:
     build:
@@ -23,10 +21,5 @@ services:
       - "3001"
     environment:
       PORT: "3001"
+      SIM_SEED: ${SIM_SEED:-}
     restart: unless-stopped
-    networks:
-      - aegis-net
-
-networks:
-  aegis-net:
-    driver: bridge

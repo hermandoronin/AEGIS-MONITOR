@@ -1,14 +1,16 @@
-# Mock data server (server/index.ts) -- generates telemetry, no database.
+# Monitoring server: plant simulator, fieldbus decoding, alarm engine, REST + WebSocket.
 FROM node:22-alpine
 WORKDIR /app
+ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --omit=dev --ignore-scripts
 
-COPY tsconfig.json tsconfig.app.json tsconfig.node.json ./
+COPY shared/ ./shared/
 COPY server/ ./server/
 
 ENV PORT=3001
 EXPOSE 3001
-
+HEALTHCHECK --interval=15s --timeout=3s CMD wget -qO- http://localhost:3001/api/v1/health || exit 1
+USER node
 CMD ["node", "--import", "tsx", "server/index.ts"]
