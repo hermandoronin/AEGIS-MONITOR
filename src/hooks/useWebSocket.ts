@@ -1,66 +1,68 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'error';
 
-interface UseWebSocketOptions {
+interface UseWebSocketOptions<T> {
   url: string;
-  reconnectIntervalMs?: number;
-  maxRetries?: number;
+  onMessage: (message: T) => void;
+  /** First retry delay; doubles on each failure up to `maxDelayMs`. */
+  initialDelayMs?: number;
+  maxDelayMs?: number;
 }
 
-interface UseWebSocketResult<T> {
-  lastMessage: T | null;
-  status: ConnectionStatus;
-  send: (data: unknown) => void;
-}
-
-export function useWebSocket<T = unknown>(options: UseWebSocketOptions): UseWebSocketResult<T> {
-  const { url, reconnectIntervalMs = 3000, maxRetries = 10 } = options;
-  const wsRef = useRef<WebSocket | null>(null);
-  const retriesRef = useRef(0);
-  const [lastMessage, setLastMessage] = useState<T | null>(null);
+/**
+ * Reconnecting WebSocket. A monitoring screen must never give up, so it
+ * retries forever with capped exponential backoff.
+ */
+export function useWebSocket<T>({
+  url,
+  onMessage,
+  initialDelayMs = 1000,
+  maxDelayMs = 10_000,
+}: UseWebSocketOptions<T>): ConnectionStatus {
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
-
-  const connect = useCallback(() => {
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-    setStatus('connecting');
-
-    ws.onopen = () => {
-      setStatus('open');
-      retriesRef.current = 0;
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      try {
-        const parsed = JSON.parse(event.data) as T;
-        setLastMessage(parsed);
-      } catch {
-        console.warn('[AEGIS-WS] Failed to parse message:', event.data);
-      }
-    };
-
-    ws.onerror = () => setStatus('error');
-
-    ws.onclose = () => {
-      setStatus('closed');
-      if (retriesRef.current < maxRetries) {
-        retriesRef.current += 1;
-        setTimeout(connect, reconnectIntervalMs);
-      }
-    };
-  }, [url, reconnectIntervalMs, maxRetries]);
+  const handler = useRef(onMessage);
 
   useEffect(() => {
+    handler.current = onMessage;
+  }, [onMessage]);
+
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = initialDelayMs;
+    let disposed = false;
+
+    const connect = () => {
+      setStatus('connecting');
+      ws = new WebSocket(url);
+      ws.onopen = () => {
+        delay = initialDelayMs;
+        setStatus('open');
+      };
+      ws.onmessage = (event: MessageEvent<string>) => {
+        try {
+          handler.current(JSON.parse(event.data) as T);
+        } catch {
+          console.warn('[aegis] unparseable message dropped');
+        }
+      };
+      ws.onerror = () => setStatus('error');
+      ws.onclose = () => {
+        if (disposed) return;
+        setStatus('closed');
+        timer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, maxDelayMs);
+      };
+    };
+
     connect();
-    return () => wsRef.current?.close();
-  }, [connect]);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      ws?.close();
+    };
+  }, [url, initialDelayMs, maxDelayMs]);
 
-  const send = useCallback((data: unknown) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(data));
-    }
-  }, []);
-
-  return { lastMessage, status, send };
+  return status;
 }

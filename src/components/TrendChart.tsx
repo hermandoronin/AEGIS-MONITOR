@@ -1,68 +1,113 @@
-import React, { useState, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
-import type { SensorReading } from '../types/sensor';
+import type { ChannelDef } from '../../shared/types';
+import type { Sample } from '../store/useVesselStore';
+import { formatTime, formatValue } from '../utils/formatters';
+import { STATE_COLOR } from '../utils/limits';
 
 interface TrendChartProps {
-  data: SensorReading[];
-  label: string;
+  channel: ChannelDef;
+  samples: Sample[];
+  height?: number;
   color?: string;
 }
 
-const TrendChart: React.FC<TrendChartProps> = ({ data, label, color = '#38bdf8' }) => {
-  const [refLeft, setRefLeft] = useState<number | null>(null);
-  const [refRight, setRefRight] = useState<number | null>(null);
-  const [zoomDomain, setZoomDomain] = useState<[number, number] | null>(null);
+interface ChartMouseEvent {
+  activeLabel?: number | string;
+}
 
-  const handleMouseDown = useCallback((e: { activeLabel?: number }) => {
-    if (e.activeLabel != null) setRefLeft(e.activeLabel);
+/** Rolling trend of one tag with its alarm limits. Drag across the plot to zoom. */
+export default function TrendChart({ channel, samples, height = 200, color = '#38bdf8' }: TrendChartProps) {
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragTo, setDragTo] = useState<number | null>(null);
+  const [zoom, setZoom] = useState<[number, number] | null>(null);
+
+  const data = useMemo(
+    () => samples.map((s) => ({ t: s.t, value: s.v[channel.tag] ?? null })),
+    [samples, channel.tag],
+  );
+  const visible = zoom ? data.filter((d) => d.t >= zoom[0] && d.t <= zoom[1]) : data;
+
+  const onDown = useCallback((e: ChartMouseEvent) => {
+    if (typeof e?.activeLabel === 'number') setDragFrom(e.activeLabel);
   }, []);
-
-  const handleMouseMove = useCallback((e: { activeLabel?: number }) => {
-    if (refLeft != null && e.activeLabel != null) setRefRight(e.activeLabel);
-  }, [refLeft]);
-
-  const handleMouseUp = useCallback(() => {
-    if (refLeft != null && refRight != null) {
-      const [left, right] = refLeft < refRight ? [refLeft, refRight] : [refRight, refLeft];
-      setZoomDomain([left, right]);
+  const onMove = useCallback((e: ChartMouseEvent) => {
+    if (dragFrom !== null && typeof e?.activeLabel === 'number') setDragTo(e.activeLabel);
+  }, [dragFrom]);
+  const onUp = useCallback(() => {
+    if (dragFrom !== null && dragTo !== null && dragFrom !== dragTo) {
+      setZoom(dragFrom < dragTo ? [dragFrom, dragTo] : [dragTo, dragFrom]);
     }
-    setRefLeft(null);
-    setRefRight(null);
-  }, [refLeft, refRight]);
+    setDragFrom(null);
+    setDragTo(null);
+  }, [dragFrom, dragTo]);
 
-  const resetZoom = () => setZoomDomain(null);
-
-  const domain = zoomDomain ?? undefined;
+  const rule = channel.alarm;
+  const limits: { y: number; color: string }[] = [];
+  if (rule && rule.type !== 'state') {
+    const sides = rule.type === 'abs' ? [1, -1] : [1];
+    for (const sign of sides) {
+      if (rule.warning !== undefined) limits.push({ y: sign * rule.warning, color: STATE_COLOR.warning });
+      if (rule.critical !== undefined) limits.push({ y: sign * rule.critical, color: STATE_COLOR.critical });
+    }
+  }
 
   return (
-    <div className="bg-slate-900 rounded-lg p-3">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs font-medium text-slate-300">{label}</h3>
-        {zoomDomain && (
-          <button onClick={resetZoom} className="text-xs text-sky-400 hover:underline">Reset zoom</button>
+    <div className="select-none">
+      <div className="flex items-center justify-between mb-1 text-xs">
+        <span className="text-slate-300">
+          {channel.label} <span className="text-slate-500">({channel.unit}) · {channel.tag}</span>
+        </span>
+        {zoom ? (
+          <button type="button" onClick={() => setZoom(null)} className="text-sky-400 hover:underline">
+            Reset zoom
+          </button>
+        ) : (
+          <span className="text-slate-600">drag to zoom</span>
         )}
       </div>
-      <ResponsiveContainer width="100%" height={180}>
-        <LineChart
-          data={data}
-          onMouseDown={handleMouseDown as never}
-          onMouseMove={handleMouseMove as never}
-          onMouseUp={handleMouseUp}
-        >
+      <ResponsiveContainer width="100%" height={height}>
+        <LineChart data={visible} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} margin={{ top: 4, right: 8, bottom: 0, left: -8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis dataKey="timestamp" domain={domain} type="number" tick={{ fontSize: 10, fill: '#94a3b8' }} />
-          <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} />
-          <Tooltip contentStyle={{ backgroundColor: '#0f172a', border: 'none', fontSize: 11 }} />
-          <Line type="monotone" dataKey="value" stroke={color} dot={false} strokeWidth={1.5} />
-          {refLeft != null && refRight != null && (
-            <ReferenceArea x1={refLeft} x2={refRight} strokeOpacity={0.3} fill="#38bdf8" fillOpacity={0.15} />
+          <XAxis
+            dataKey="t"
+            type="number"
+            scale="time"
+            domain={['dataMin', 'dataMax']}
+            tickFormatter={(t: number) => formatTime(t).slice(0, 5)}
+            tick={{ fontSize: 10, fill: '#64748b' }}
+            minTickGap={40}
+          />
+          <YAxis
+            domain={['auto', 'auto']}
+            tick={{ fontSize: 10, fill: '#64748b' }}
+            width={52}
+            tickFormatter={(v: number) => formatValue({ ...channel, decimals: Math.min(channel.decimals, 2) }, v)}
+          />
+          <Tooltip
+            contentStyle={{ backgroundColor: '#020617', border: '1px solid #1e293b', fontSize: 11 }}
+            labelFormatter={(t) => `${formatTime(Number(t))} UTC`}
+            formatter={(v) => [`${formatValue(channel, Number(v))} ${channel.unit}`, channel.label]}
+          />
+          {limits.map((l) => (
+            <ReferenceLine key={l.y} y={l.y} stroke={l.color} strokeDasharray="4 4" ifOverflow="discard" />
+          ))}
+          <Line type="monotone" dataKey="value" stroke={color} dot={false} strokeWidth={1.6} isAnimationActive={false} connectNulls />
+          {dragFrom !== null && dragTo !== null && (
+            <ReferenceArea x1={dragFrom} x2={dragTo} fill="#38bdf8" fillOpacity={0.12} strokeOpacity={0.3} />
           )}
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
-};
-
-export default TrendChart;
+}
