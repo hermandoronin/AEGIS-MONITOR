@@ -9,7 +9,7 @@
  * the physics, so alarms appear the way they would on board.
  */
 import { VESSEL } from '../../shared/vessel';
-import type { VoyageState } from '../../shared/types';
+import type { VoyageState, Waypoint } from '../../shared/types';
 import { Rng, approach, clamp, lag, sine, wander } from './random';
 import {
   NORTH_SEA_ROUTE,
@@ -19,7 +19,6 @@ import {
   distanceToGo,
   positionAlong,
   travel,
-  type Waypoint,
 } from './route';
 import type { ScenarioId } from './scenarios';
 
@@ -75,6 +74,9 @@ interface PlantState {
   loFilterDrop: number;
   htValveError: number;
   injectorFault: number;
+  /** One-minute averages that the SFOC calculation works on. */
+  fuelAvg: number;
+  powerAvg: number;
   // Power plant
   gens: Generator[];
   elecWander: number;
@@ -137,6 +139,8 @@ function initialState(now: number): PlantState {
     loFilterDrop: 0,
     htValveError: 0,
     injectorFault: 0,
+    fuelAvg: 1036,
+    powerAvg: MCR_KW * SEA_LOAD,
     gens: [
       { state: 'running', startTimer: 0, speed: 1800, htTemp: 83, loPress: 4.45 },
       { state: 'running', startTimer: 0, speed: 1800, htTemp: 83, loPress: 4.45 },
@@ -321,7 +325,10 @@ export class PlantSimulator {
     v['ME.LOAD'] = load * 100;
     v['ME.SHAFT.POWER'] = power;
     v['ME.FO.FLOW'] = meFuel;
-    v['ME.SFOC'] = power > 100 ? (meFuel * 1000) / power : 0;
+    // SFOC over a one-minute window, as performance systems do; instantaneous values are all wave noise.
+    s.fuelAvg = lag(s.fuelAvg, meFuel, 60, dt);
+    s.powerAvg = lag(s.powerAvg, power, 60, dt);
+    v['ME.SFOC'] = s.powerAvg > 100 ? (s.fuelAvg * 1000) / s.powerAvg : 0;
     v['ME.LO.PRESS'] = 4.12 + 0.12 * s.load - s.loFilterDrop + rng.normal(0.012);
     v['ME.LO.TEMP'] = s.meLoTemp + rng.normal(0.08);
     v['ME.HT.TEMP'] = s.meHt + rng.normal(0.08);
@@ -514,6 +521,7 @@ export class PlantSimulator {
       voyageNo: `V.${String(s.voyageNo).padStart(3, '0')}${northbound ? 'N' : 'S'}`,
       from: s.route[0].name,
       to: s.route[s.route.length - 1].name,
+      route: s.route,
       nextWaypoint: s.route[s.nextIndex].name,
       departedAt: s.departedAt,
       lat: s.lat,

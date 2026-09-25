@@ -3,11 +3,7 @@
  * Distances are in nautical miles, bearings in degrees true.
  */
 
-export interface Waypoint {
-  name: string;
-  lat: number;
-  lon: number;
-}
+import type { Waypoint } from '../../shared/types';
 
 /** Rotterdam to Gothenburg along the Dutch, German and Danish coasts. */
 export const NORTH_SEA_ROUTE: Waypoint[] = [

@@ -39,8 +39,8 @@ const MAIN_ENGINE: ChannelDef[] = [
   {
     tag: 'ME.SFOC', label: 'SFOC', system: 'Main Engine', group: 'Performance',
     kind: 'analog', unit: 'g/kWh', min: 140, max: 240, decimals: 1,
-    source: 'Calculated', address: 'ME.FO.FLOW / ME.SHAFT.POWER',
-    description: 'Specific fuel oil consumption. The single best indicator of engine efficiency; a rising trend means fouling, worn injectors or bad fuel.',
+    source: 'Calculated', address: '1-min avg ME.FO.FLOW / ME.SHAFT.POWER',
+    description: 'Specific fuel oil consumption over a one-minute window. The single best indicator of engine efficiency; a rising trend means fouling, worn injectors or bad fuel.',
   },
   {
     tag: 'ME.LO.PRESS', label: 'LO inlet pressure', system: 'Main Engine', group: 'Lubrication & cooling',

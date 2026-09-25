@@ -109,10 +109,18 @@ export interface SystemStatus {
   unacknowledged: number;
 }
 
+export interface Waypoint {
+  name: string;
+  lat: number;
+  lon: number;
+}
+
 export interface VoyageState {
   voyageNo: string;
   from: string;
   to: string;
+  /** Passage plan, departure first. */
+  route: Waypoint[];
   nextWaypoint: string;
   departedAt: number;
   lat: number;
