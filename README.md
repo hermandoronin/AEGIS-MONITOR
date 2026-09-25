@@ -1,323 +1,351 @@
-# AEGIS-MONITOR -- Ship Systems Monitoring Dashboard
+# AEGIS-MONITOR — engine room monitoring and alarm system
 
-![Status](https://img.shields.io/badge/status-early%20prototype-orange?style=flat-square)
+![CI](https://github.com/hermandoronin/AEGIS-MONITOR/actions/workflows/ci.yml/badge.svg)
+![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![Three.js](https://img.shields.io/badge/Three.js-r170-000000?style=flat-square&logo=threedotjs&logoColor=white)
-![WebSocket](https://img.shields.io/badge/WebSocket-real--time-010101?style=flat-square)
+![Node](https://img.shields.io/badge/Node.js-22-339933?style=flat-square&logo=node.js&logoColor=white)
+
+**Русская версия: [README.ru.md](README.ru.md)** — with the full story of what this is, why it
+is built this way and what changed in 0.2.
+
+![Overview with a generator trip and an injector fault in progress](docs/screenshots/overview-alarms.png)
+
+A web-based monitoring layer for a ship's machinery: it collects engine-room data from the
+buses the ship already has, evaluates alarms in one place, keeps history, and shows the
+whole plant on any screen on board — engine control room, bridge, chief engineer's office.
+
+Until it is connected to real hardware it runs against a **physical model of the engine room**
+of a 28,000 dwt cargo ship on passage from Rotterdam to Gothenburg. The model is not random
+noise: power follows the propeller law, fuel follows an SFOC curve, temperatures lag their
+heat balance, the power management system starts generators, the autopilot steers along a
+passage plan. Eight real failure modes can be injected, and the alarms appear exactly as they
+would on watch.
+
+> Written by a marine engineer. This is a secondary, read-only monitoring tool. It is not a
+> class-approved alarm and monitoring system and must not replace the one required by SOLAS
+> Chapter II-1. See [Standards and scope](#standards-and-scope).
 
 ---
 
-A single-page dashboard for ship power plant telemetry, written by a marine engineer
-learning to build the tools he wanted in the engine room.
+## Contents
 
-**What it is today:** a React 19 / TypeScript front end that connects to a WebSocket,
-renders one main-engine data stream as gauges, trend charts and browser-evaluated
-alarms, and ships with a **mock data server** that generates that stream. There is no
-database, no authentication and no connection to real shipboard hardware.
-
-**What it is not:** a certified alarm and monitoring system, or a product. Everything
-under [Planned](#planned) is honest about not existing yet.
-
----
-
-## Table of Contents
-
-- [Implemented](#implemented)
-- [Data Interfaces](#data-interfaces)
-- [Planned](#planned)
-- [Tech Stack](#tech-stack)
+- [What it does](#what-it-does)
+- [Quick start](#quick-start)
+- [A five-minute demo](#a-five-minute-demo)
 - [Architecture](#architecture)
-- [Getting Started](#getting-started)
+- [The alarm model](#the-alarm-model)
+- [The plant simulator](#the-plant-simulator)
+- [API](#api)
+- [Project structure](#project-structure)
+- [Testing](#testing)
 - [Deployment](#deployment)
-- [IMO e-Navigation Notes](#imo-e-navigation-notes)
-- [Project Structure](#project-structure)
-- [About the Author](#about-the-author)
-- [License](#license)
+- [Standards and scope](#standards-and-scope)
+- [Roadmap](#roadmap)
+- [Author](#author)
 
 ---
 
-## Implemented
+## What it does
 
-### Live sensor gauges
-Six SVG half-arc gauges for the main engine channels carried by the incoming
-WebSocket frame: speed, lube oil pressure, HT cooling water temperature, exhaust gas
-temperature, fuel flow and shaft power. Each gauge has its own operating range and
-warning/critical thresholds, and colours the arc green / amber / red. Pressure gauges
-alarm on falling values, temperatures on rising ones.
-
-### Alarm panel
-Thresholds are evaluated in the browser on every received frame. Crossing a threshold
-raises an alarm with a severity, a timestamp and a source system; the duty engineer can
-acknowledge it. Severities are **Critical / Warning / Caution**, matching
-`AlarmSeverity` in `src/types/sensor.ts`. Alarms live in a Zustand store capped at 500
-entries -- they are **held in memory only and lost on reload**. There is no alarm
-history, no search and no audible annunciation.
-
-### Trend charts
-Recharts line charts over the rolling in-memory buffer (the last 300 frames, roughly
-five minutes at 1 Hz). Drag across the plot to zoom into a time range, then reset. No
-historical queries, no CSV export.
-
-### Voyage performance panel
-Specific fuel oil consumption computed from the streamed fuel flow and shaft power
-(`L/h x 980 g/L / kW`), compared against the session average. Fuel burned and distance
-run are trapezoidally integrated over the buffered samples, so both are **totals since
-the dashboard connected**, not voyage totals. The weather overlay is an explicit
-placeholder.
-
-### 3D section view
-A React Three Fiber scene with four clickable blocks standing in for machinery spaces
-(main engine, generators, pumps, steering gear), with orbit controls. It is a
-navigation affordance and a placeholder for real geometry -- **not** a vessel general
-arrangement, and sensor values are not projected onto it.
-
-### CAN frame decoders
-Standalone, dependency-free TypeScript functions with bounds-checked buffer reads:
-
-| Decoder | Coverage |
+| | |
 |---|---|
-| `src/utils/j1939-decoder.ts` | PGN extraction from a 29-bit CAN ID, plus three PGNs: 61444 (engine speed, SPN 190), 65262 (coolant temperature, SPN 110), 65263 (oil pressure, SPN 100). Each result carries its SPN. **FMI is always `null`** -- diagnostic trouble codes per J1939-73 are not parsed. |
-| `src/utils/nmea-decoder.ts` | Two NMEA 2000 PGNs: 127488 (engine parameters, rapid update) and 130312 (temperature). |
+| **70 monitored points, 7 systems** | Main engine, generators and switchboard, fuel treatment, cooling water, steering gear, HVAC, ballast and stability. Every point is defined once in the [IO list](docs/io-list.md) with its range, alarm limits, bus address and the reason it is watched. |
+| **Server-side alarm engine** | H/HH and L/LL limits, 2 s on-delay, hysteresis, alarm blocking for stopped machinery, sensor-fault detection, NEW → ACK → RTN lifecycle. One alarm list for every screen; an acknowledgement on the bridge is seen in the ECR. |
+| **Real fieldbus path** | Generator data travels as SAE J1939 frames (EEC1, ET1, EFL/P1), rudder and temperatures as NMEA 2000 frames (127245, 130312), and is decoded by the same codecs a gateway on a real CAN bus would use — with real bus resolution. |
+| **Live dashboard** | Gauges with alarm zones, status lamps, trends with limit lines, exhaust temperature balance, a 3D section of the machinery spaces coloured by system state, audible alarm, stale-data detection. |
+| **Voyage and efficiency** | Passage plan plot, ETA, SFOC, fuel per day, fuel burned this voyage and fuel on board at arrival. |
+| **History** | One hour kept on the server at 1 Hz and pre-filled at start, so trends are full the moment you open the page and are refilled after a lost connection. |
+| **Fault injection** | Eight scenarios, from a clogging lube oil filter to a generator trip with PMS load shedding and standby start. |
 
-The decoders are library code and are not yet fed by the UI, which consumes the mock
-server's JSON frames directly.
-
-### Mock data server
-`server/index.ts` is an Express + `ws` server that **generates every value it returns
-with `Math.random()`**. It exposes `/api/v1/vessels`, `.../status`, `.../history` and
-`.../alarms`, and streams a snapshot over `/ws` once per second. It reads no bus, opens
-no database and persists nothing. It exists so the dashboard has something to render.
-
----
-
-## Data Interfaces
-
-| Interface | Status | Notes |
-|---|---|---|
-| **WebSocket** | Working | JSON frames at 1 Hz from the mock server. Auto-reconnect with a retry cap. Point `VITE_WS_URL` at another gateway that speaks the same frame shape (`LiveSnapshot` in `src/types/sensor.ts`). |
-| **REST API** | Endpoints exist, data is generated | Typed client in `src/api/client.ts` for vessel list, status, history and alarm log. Not yet called by the dashboard. |
-| **NMEA 2000 parser** | Partial | Two PGNs, decode only. No CAN transport. |
-| **J1939 parser** | Partial | Three PGNs, SPN values only, no FMI. No CAN transport. |
+| Machinery | Generators after a trip |
+|---|---|
+| ![Main engine with a cylinder 4 fault](docs/screenshots/main-engine-fault.png) | ![Generators: DG1 tripped, DG3 on line](docs/screenshots/generators-trip.png) |
+| **Alarms and event log** | **Voyage** |
+| ![Alarm list and event log](docs/screenshots/alarms.png) | ![Voyage view](docs/screenshots/voyage.png) |
 
 ---
 
-## Planned
+## Quick start
 
-Not started or not wired up. Listed so the feature list above stays honest.
-
-- **Persistence** -- TimescaleDB hypertables and continuous aggregates for sensor
-  history and a searchable alarm log. A database container is provisioned in
-  `docker-compose.yml`, but nothing connects to it and there is no schema yet.
-- **Authentication** -- no user model, no sessions, no access control of any kind.
-- **Real acquisition layer** -- a gateway process that actually reads CAN and feeds the
-  decoders, replacing the mock generator.
-- **Modbus TCP** -- polling PLCs and VFDs in the automation network. No client exists.
-- **Multi-vessel fleet view** -- shore-side aggregation. No components exist.
-- **Historical queries and CSV export** -- currently the charts only see the in-memory
-  buffer.
-- **Audible alarm annunciation** and per-severity tones.
-
----
-
-## Tech Stack
-
-### Frontend
-- **React 19** + **TypeScript 5** (strict)
-- **Tailwind CSS 4** via `@tailwindcss/vite` -- dark theme
-- **Three.js / React Three Fiber / drei** -- 3D section view
-- **Recharts** -- trend and voyage charts
-- **Zustand** -- global state
-
-### Backend (mock)
-- **Node.js 22**, **Express 5**, **ws** -- generated telemetry only
-
-### Tooling
-- **Vite 6** -- build and dev server
-- **ESLint 9** (flat config) + **Prettier**
-- **Docker Compose** -- containerized deployment
-- **GitHub Actions** -- `npm ci`, lint, build on every push and PR
-
----
-
-## Architecture
-
-```
-                    Browser (React SPA, Vite build)
-                                  |
-              +-------------------+-------------------+
-              |                                       |
-        [WebSocket /ws]                        [REST /api/v1]
-        1 Hz JSON frames                       client written,
-              |                                not yet called
-              |                                       |
-              +-------------------+-------------------+
-                                  |
-                    server/index.ts -- MOCK SERVER
-                    Express 5 + ws, port 3001
-                    every value from Math.random()
-                                  |
-                                  X
-                    no database, no CAN bus,
-                    no persistence  (see Planned)
-```
-
-In the browser, `useWebSocket` feeds a rolling buffer in `App.tsx`; thresholds are
-evaluated per frame and raised alarms land in the Zustand store that the alarm panel
-and the system sidebar read from.
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js >= 22, npm >= 10
-- Docker and Docker Compose (optional, only for the container workflow)
-
-### Installation
+Requirements: Node.js 22+, npm 10+.
 
 ```bash
 git clone https://github.com/hermandoronin/AEGIS-MONITOR.git
 cd AEGIS-MONITOR
 npm install
+npm start        # monitoring server on :3001 and dashboard on :5173
 ```
 
-### Development
+Open **http://localhost:5173**. The Vite dev server proxies `/api` and `/ws` to the monitoring
+server, so nothing needs configuring.
+
+| Command | What it does |
+|---|---|
+| `npm start` | Server and dashboard together |
+| `npm run server` / `npm run dev` | Each on its own |
+| `npm test` | Unit tests (vitest) |
+| `npm run build` | Type-check everything and build the dashboard into `dist/` |
+| `npm run lint` | ESLint |
+| `npm run docs:io-list` | Regenerate [docs/io-list.md](docs/io-list.md) from the code |
+
+Server settings (all optional, see [.env.example](.env.example)): `PORT`, `SIM_SEED` (fixed seed
+= repeatable run), `BACKFILL_S` (history pre-generated at start), `TICK_MS`.
+
+---
+
+## A five-minute demo
+
+1. **Overview** — every system green, key figures along the top, the ship on passage.
+2. **Simulator → Generator shutdown → Inject.** Open *Generators*: DG1 trips, DG2 is overloaded
+   to ~110%, bus frequency dips below 58 Hz, after 4 s the PMS trips non-essential consumers,
+   after 18 s DG3 is on line and sharing load, 30 s later the consumers are reconnected.
+3. **Alarms** — the whole sequence is there: the frequency and overload alarms already
+   returned to normal (RTN) but still wait for acknowledgement; the event log shows how long
+   each lasted.
+4. **Simulator → Cylinder 4 injector fault.** On *Main Engine* the exhaust balance shows
+   cylinder 4 drifting away from the mean, then the high and high-high alarms, while SFOC
+   creeps up on the Voyage tab.
+5. **Sea water pressure transmitter wire break** — note that you get a *sensor fault* caution,
+   not a false low-pressure alarm.
+6. **Reset all faults.**
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Sources["Data source"]
+    SIM["Plant simulator<br/>server/simulator"]
+    HW["Shipboard buses (roadmap)<br/>J1939 · NMEA 2000 · Modbus"]
+  end
+  subgraph Server["Monitoring server (Node.js)"]
+    ACQ["Acquisition<br/>encode/decode CAN frames"]
+    IO[("IO list<br/>shared/channels.ts")]
+    ALM["Alarm engine"]
+    HIS["History<br/>1 h ring buffer"]
+    API["REST /api/v1"]
+    WS["WebSocket /ws<br/>1 Hz frames"]
+  end
+  subgraph Clients["Any browser on board"]
+    ECR["ECR"]
+    BR["Bridge"]
+    OFF["Office / cabin"]
+  end
+  SIM --> ACQ
+  HW -.-> ACQ
+  ACQ --> ALM --> HIS
+  IO -. limits, ranges .-> ALM
+  ALM --> WS
+  HIS --> API
+  WS --> ECR & BR & OFF
+  API --> ECR & BR & OFF
+```
+
+One tick, once per second (`server/runtime.ts`):
+
+1. **Plant** produces physical readings for every tag.
+2. **Acquisition** encodes the J1939 and NMEA 2000 points into CAN frames and decodes them back
+   (Modbus and 4-20 mA points pass straight through — the simulator plays the PLC).
+3. Values are rounded to their display resolution, so what alarms is exactly what is shown.
+4. **Alarm engine** evaluates every limit.
+5. **History** stores the row; the **frame** (values, system states, alarm list, voyage) goes
+   to every WebSocket client.
+
+Design choices, briefly:
+
+- **The IO list is code** (`shared/channels.ts`). The simulator, the decoders, the alarm engine,
+  the dashboard layout and the documentation all read the same table, and tests check it for
+  consistency. Adding a sensor is adding one row.
+- **Shared types** (`shared/types.ts`) for everything on the wire — the server and the browser
+  cannot drift apart.
+- **Alarms on the server**, not in the browser: one truth for all screens, acknowledgements
+  propagate, a page reload does not lose alarms.
+- **Same-origin by default**: the browser only talks to its own host; Vite (dev) and nginx
+  (Docker) proxy `/api` and `/ws`. Works under any IP or host name on the ship's LAN.
+- **Seeded simulator**: a fixed `SIM_SEED` gives the same run every time, for tests and demos.
+
+---
+
+## The alarm model
+
+Each limit of each point is its own **alarm point** (`ME.LO.PRESS:warning`,
+`ME.LO.PRESS:critical`, `DG1.TRIP:state`, `SW.PRESS:fault`).
+
+| Rule | Behaviour |
+|---|---|
+| On-delay | A condition must hold for 2 s before the alarm is raised — no chatter from spikes. |
+| Hysteresis | Clears only 1% of span inside the limit — a value sitting on a limit does not flap. |
+| Alarm blocking | Points with `inhibitedBy` are silent while that machine is stopped (a standby generator has zero oil pressure, and that is fine). |
+| Sensor fault | A reading more than 10% of span outside the instrument range (e.g. a 4-20 mA wire break reads −25%) raises a *Caution* and suppresses the process alarms of that point. |
+| Lifecycle | **NEW** (active, unacknowledged, flashing) → **ACK** (active, steady) → gone when cleared. If it clears first it stays as **RTN** until acknowledged. |
+| Priorities | Critical ≈ IEC 62923 *alarm*, Warning ≈ *warning*, Caution ≈ *caution*. |
+
+---
+
+## The plant simulator
+
+`server/simulator/plant.ts` — a set of coupled first-order models, integrated at 1 s:
+
+- **Main engine**: 6-cylinder two-stroke, MCR 8,000 kW at 120 rpm, sea passage at 78% MCR.
+  Speed from the propeller law, wave-induced torque (the governor holds speed, the fuel index
+  moves), SFOC curve with its minimum near 78% load, thermal lags for jacket water, lube oil,
+  scavenge air, thrust bearing and each cylinder's exhaust.
+- **Power plant**: 3 × 1,000 kWe gensets, hotel load wandering around 1,060 kW with a cycling
+  compressor, PMS with standby start (on trip or >90% load), preferential trip after 4 s of
+  overload, reconnection when there is margin, frequency dip on a load step.
+- **Fuel**: viscosity-controlled heater, service tank, fuel burned and remaining on board.
+- **Navigation**: rhumb-line passage plan, PID autopilot with a first-order (Nomoto) yaw model,
+  wind and wave disturbance, speed from propeller pitch and slip, tidal current.
+- **Ballast/stability**: tank levels, list from the transverse moment, roll.
+
+With no fault injected it runs for hours without a single alarm (a test checks an hour on three
+seeds). Scenarios:
+
+| Scenario | What you should see |
+|---|---|
+| ME lube oil filter clogging | LO inlet pressure low after ~70 s, low-low after ~110 s |
+| HT cooling water thermostat stuck | HT outlet high after ~110 s, high-high after ~160 s |
+| Cylinder 4 injector fault | Cyl 4 exhaust high / high-high, SFOC rises |
+| Generator shutdown | Trip, overload, frequency dip, load shedding, standby start |
+| Fuel heater failure | Viscosity high after ~70 s, high-high after ~130 s |
+| Steering gear hydraulic leak | Tank level low / low-low (SOLAS II-1/29) |
+| Ballast valve passing | DB 1 stbd floods, list above 5° |
+| SW pressure transmitter wire break | Sensor-fault caution, no false process alarm |
+
+---
+
+## API
+
+Base path `/api/v1`. Vessel id of the demo ship: `aegis-001`.
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/health` | Status, uptime, time of last frame |
+| GET | `/vessels` | Vessels served by this server |
+| GET | `/vessels/:id` | Particulars (`VesselInfo`) |
+| GET | `/vessels/:id/channels` | The IO list |
+| GET | `/vessels/:id/status` | Latest frame (`TelemetryFrame`) |
+| GET | `/vessels/:id/history?seconds=900&tags=A,B` | `{ tags, rows: [[t, v1, v2…]] }`, up to 3600 s |
+| GET | `/vessels/:id/alarms?limit=200` | Alarm event log, newest first |
+| POST | `/vessels/:id/alarms/:alarmId/ack` | Acknowledge one alarm |
+| POST | `/vessels/:id/alarms/ack-all` | Acknowledge all |
+| GET | `/sim/scenarios` | Fault scenarios and whether they are active |
+| POST | `/sim/scenarios/:id/start` · `/stop` | Inject / remove a fault |
+| POST | `/sim/reset` | Clear all faults, machinery back to normal |
+
+**WebSocket** `/ws`: on connect the latest `TelemetryFrame`, then one per tick. All types are in
+[`shared/types.ts`](shared/types.ts).
+
+---
+
+## Project structure
+
+```
+shared/                      Code used by both server and dashboard
+  types.ts                   Everything that crosses the wire
+  channels.ts                IO list: 70 points, ranges, limits, addresses, descriptions
+  vessel.ts                  Demo vessel particulars (fictional ship)
+server/
+  index.ts                   Entry point: tick loop, WebSocket broadcast, shutdown
+  runtime.ts                 One tick: plant -> fieldbus -> alarms -> history -> frame
+  api.ts                     REST routes
+  alarms.ts                  Alarm engine
+  history.ts                 In-memory history ring buffer
+  acquisition/fieldbus.ts    Encode/decode J1939 and NMEA 2000 frames into tags
+  protocols/j1939.ts         SAE J1939 codec (EEC1, ET1, EFL/P1)
+  protocols/nmea2000.ts      NMEA 2000 codec (127245, 127488, 130312)
+  simulator/plant.ts         Engine-room physics
+  simulator/scenarios.ts     Fault scenarios
+  simulator/route.ts         Passage plan and plane-sailing maths
+  simulator/random.ts        Seeded noise, lags, random walks
+  **/*.test.ts               Unit tests next to the code they test
+src/                         Dashboard (React 19, Vite, Tailwind 4)
+  App.tsx                    Layout and tab switching
+  config.ts                  URLs and timing constants
+  api/client.ts              Typed REST client
+  hooks/                     WebSocket, telemetry wiring, alarm actions and sound, clock
+  store/useVesselStore.ts    Zustand store: frame, history, alarms, navigation
+  views/                     Overview, Machinery, Voyage, Alarms, Simulator
+  components/                Gauge, trend, alarm list, 3D section, header, sidebar
+  utils/                     Formatting, limit colouring
+scripts/gen-io-list.ts       Writes docs/io-list.md from shared/channels.ts
+deploy/nginx.conf            Serves the dashboard, proxies /api and /ws
+docs/                        IO list and screenshots
+```
+
+---
+
+## Testing
 
 ```bash
-cp .env.example .env      # optional, sensible defaults are built in
-npm run server            # mock data server on :3001
-npm run dev               # dashboard on :5173
+npm test
 ```
 
-The dashboard is at `http://localhost:5173`. Without the mock server running it
-renders, reports `DISCONNECTED` and tells you no telemetry has arrived -- it never
-fabricates readings in the browser.
-
-Other scripts: `npm run build` (`tsc -b` then `vite build`), `npm run lint`,
-`npm run preview`, `npm run format`.
-
-### Environment Variables
-
-All optional; see [`.env.example`](.env.example).
-
-| Variable | Default | Used by |
-|---|---|---|
-| `PORT` | `3001` | mock server |
-| `VITE_WS_URL` | `ws://<host>:3001/ws` | dashboard |
-| `VITE_VESSEL_NAME` | `M/V AEGIS PIONEER` | dashboard header |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | -- | `docker compose` database container only |
-
-`docker compose` will refuse to start unless `POSTGRES_PASSWORD` is set.
+58 tests covering the J1939 and NMEA 2000 codecs (hand-built frames, round trips,
+not-available values, PDU1 addressing), the fieldbus path, every alarm rule, the history buffer,
+the IO list's internal consistency, the REST API end to end, and the simulator: an hour of
+normal passage without an alarm on three seeds, repeatability, and each fault scenario raising
+the alarms it should. CI runs lint, tests, type-check and build on every push and pull request.
 
 ---
 
 ## Deployment
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose up --build                                  # http://localhost:8080
+docker compose -f docker-compose.prod.yml up -d --build    # port 80, restarts on its own
 ```
 
-| Service | Build file | Port | Description |
-|---|---|---|---|
-| `frontend` | `Dockerfile` | 80 | Nginx serving the built React app with SPA fallback |
-| `backend` | `Dockerfile.server` | 3001 | Mock data server (Express + WebSocket) |
+| Service | Image | Role |
+|---|---|---|
+| `frontend` | `Dockerfile` → nginx | Built dashboard; proxies `/api` and `/ws` to `backend` |
+| `backend` | `Dockerfile.server` → Node 22 | Monitoring server; production dependencies only, runs as `node`, health check |
 
-The development compose file (`docker-compose.yml`) additionally starts a
-`timescale/timescaledb` container. It is provisioned for the planned persistence layer
-and is not used by any code in this repository yet.
-
-### Hardware Notes
-
-- **Bridge / ECR display**: any modern x86 or ARM device with a browser; Chromium-based
-  browsers give the best WebGL performance for the 3D view.
-- **Shipboard server**: a fanless industrial PC is more than enough for the current
-  Node process.
+A fanless industrial PC is plenty for the server. Any modern browser works as a display;
+Chromium-based ones give the best WebGL performance for the 3D view.
 
 ---
 
-## IMO e-Navigation Notes
+## Standards and scope
 
-This is a hobby project, not a certified system, and it claims no compliance. These are
-the references that shaped the design:
+This is a hobby project by a working marine engineer. It claims no compliance with anything.
+The references that shaped it:
 
-- **MSC.1/Circ.1512** -- software quality assurance and human-centred design for
-  e-Navigation. The influence here is the visual language: high contrast for bridge and
-  ECR lighting, dense but low-clutter layouts, one consistent colour code for status.
-- **IEC 62923** -- bridge alert management. The alarm panel currently uses three
-  severities (Critical / Warning / Caution), which is a **subset** of the IEC 62923
-  category set (Emergency / Alarm / Warning / Caution) and does not implement its
-  escalation, silencing or responsibility-transfer behaviour.
-- **IEC 61162-450** -- maritime digital interfaces. Referenced while shaping the sensor
-  data model; no 61162-450 transport is implemented.
+- **IEC 62923-1/-2** (bridge alert management) — priorities, the acknowledge/rectified model.
+  Implemented: three priorities, unacknowledged/acknowledged/rectified-unacknowledged states.
+  Not implemented: escalation, silence, responsibility transfer, shelving.
+- **IMO MSC.1/Circ.1512** and **IEC 62288** — high-contrast display for ECR and bridge
+  lighting, consistent status colours (red / orange / yellow).
+- **SOLAS II-1/29** — steering gear hydraulic low-level alarm (modelled).
+- **SAE J1939-71** and **NMEA 2000** — parameter scaling and field layouts of the decoded PGNs.
 
-> AEGIS-MONITOR is a visualization experiment. It does not replace, and must not be
-> relied on in place of, the certified alarm and monitoring system required by SOLAS
-> Chapter II-1.
+It is **read-only by design**: it never writes to a bus or a controller. The class-approved
+alarm and monitoring system remains the system of record on board.
 
 ---
 
-## Project Structure
+## Roadmap
 
-```
-AEGIS-MONITOR/
-  .github/workflows/ci.yml   -- npm ci, lint, build
-  public/
-    favicon.svg
-  server/
-    index.ts                 -- mock Express + WebSocket server
-  src/
-    api/
-      client.ts              -- typed REST client (not yet called by the UI)
-    components/
-      AlarmPanel.tsx
-      GaugeWidget.tsx
-      Header.tsx
-      ShipModel.tsx
-      SystemSidebar.tsx
-      TrendChart.tsx
-      VoyagePerformance.tsx
-    hooks/
-      useAlarms.ts           -- standalone alarm-state hook
-      useWebSocket.ts        -- reconnecting WebSocket client
-    store/
-      useVesselStore.ts      -- Zustand store (connection, alarms, selection)
-    types/
-      sensor.ts              -- shared sensor, alarm and system types
-    utils/
-      formatters.ts
-      j1939-decoder.ts
-      nmea-decoder.ts
-    App.tsx
-    main.tsx
-    index.css
-    vite-env.d.ts
-  .env.example
-  Dockerfile                 -- frontend build + nginx
-  Dockerfile.server          -- mock server
-  docker-compose.yml
-  docker-compose.prod.yml
-  eslint.config.js
-  index.html
-  package.json
-  tsconfig.json / tsconfig.app.json / tsconfig.node.json
-  vite.config.ts
-```
+- **Real acquisition**: SocketCAN gateway feeding the existing J1939/NMEA 2000 decoders;
+  Modbus TCP client for PLC and PMS registers. Only `acquire()` changes.
+- **Persistence**: TimescaleDB for long-term history and the alarm log.
+- **Access control**: read-only roles for bridge and shore, acknowledgement rights for engineers.
+- **More of IEC 62923**: silence, shelving, escalation, alarm groups.
+- **J1939 diagnostics**: DM1 active trouble codes with SPN/FMI.
+- **Reporting**: noon report, IMO DCS / EU MRV fuel figures, CII.
+- **Fleet view**: several vessels on one shore server.
 
 ---
 
-## About the Author
+## Author
 
-Marine engineer, currently learning software by building the tools I wished I had on
-watch. Years of watchkeeping -- general cargo ships through to cruise liners -- made
-the gap between raw machinery data and an actionable picture very obvious. This
-repository is where I work on closing it. It is early, and the README above is
-deliberately blunt about how early.
-
----
+Marine engineer — general cargo ships through to cruise liners — learning software by building
+the tools I wished I had on watch. The gap between raw machinery data and an actionable picture
+is obvious from the engine room; this repository is where I work on closing it.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+MIT, see [LICENSE](LICENSE).
